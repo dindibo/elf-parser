@@ -5,6 +5,10 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+// Prototypes
+
+char *findLongestCave(char *codeSec, int secSize, int *codecaveSize);
+
 Elf32_Shdr *findSectionByName(const char *sectionName, int32_t fd, Elf32_Ehdr eh, Elf32_Shdr sh_table[]){
 	uint32_t i;
 	char* sh_str;	/* section-header string-table is also a section. */
@@ -66,6 +70,105 @@ bool duplicateFile(const char *orgFilename, char *newFilename){
 	chmod(newFilename, 0664);
 
 	return true;
+}
+
+struct codecave {
+	char secName[32];
+	void *physicalOffset;
+	int length;
+} typedef codecave;
+
+codecave *getWinnerCodecave(codecave *caves, int cavesNum){
+	int max = 0;
+	codecave *winner = NULL;
+
+	for(int i = 0 ;i<cavesNum; i++){
+		if(caves[i].length > max){
+			max = caves[i].length;
+			winner = &caves[i];
+		}
+	}
+
+	return winner;
+}
+
+void codecave_display(codecave *self){
+
+printf(
+"======== CAVE ========\n\
+Section     : %s\n\
+File offset : %p\n\
+Cave size   : %d\n\n", self->secName, self->physicalOffset, self->length);
+}
+
+void codecave_summary(codecave *caves, int cavesNum){
+	codecave *winner = getWinnerCodecave(caves, cavesNum);
+	
+	for(int i = 0;i < cavesNum; i++){
+		if(&caves[i] == winner){
+			puts("**** We have a winner ****");
+		}
+
+		codecave_display(&caves[i]);
+	}
+}
+
+char *extractSectionContent(Elf32_Shdr *currentSec, int32_t fd, Elf32_Ehdr eh, int *readSize){
+	int secSize = currentSec->sh_size;
+	char *codeBuffer = (char *)malloc(secSize);
+	
+	assert(lseek(fd, (off_t)currentSec->sh_offset, SEEK_SET) == (off_t)currentSec->sh_offset);
+	read(fd, codeBuffer, secSize);
+
+	if(readSize != NULL ){
+		*readSize = secSize;
+	}
+
+	return codeBuffer;
+}
+
+codecave *searchCodecaves(int32_t fd, Elf32_Ehdr eh, Elf32_Shdr sh_table[], int *cavesNumber){
+	uint32_t i;
+	char* sh_str;	/* section-header string-table is also a section. */
+	int currentCaves = 0;
+	char *sectionContent;
+
+	codecave *caves = (codecave *) malloc(sizeof(codecave));
+
+	sh_str = read_section(fd, sh_table[eh.e_shstrndx]);
+
+	for(i=0; i<eh.e_shnum; i++) {
+		int   readBytes;
+		int   currentCaveSize;
+		char *currentCave;
+
+		sectionContent = extractSectionContent(&sh_table[i], fd, eh, &readBytes);
+		currentCave = findLongestCave(sectionContent, readBytes, &currentCaveSize);
+
+		if(currentCave != NULL){
+			caves = (codecave *) realloc(caves, sizeof(codecave) * (++currentCaves));
+			codecave temp; 
+
+			strncpy(temp.secName, (sh_str + sh_table[i].sh_name), 32);
+			temp.physicalOffset = (void *)(sh_table[i].sh_offset + (currentCave - sectionContent));
+			temp.length = currentCaveSize;
+
+			caves[currentCaves - 1] = temp;
+		}
+
+		//free(sectionContent); // ???
+	}
+
+	if(cavesNumber != NULL){
+		*cavesNumber = currentCaves;
+	}
+
+	if (currentCaves == 0){
+		free(caves);
+		return NULL;
+	}
+
+	return caves;
 }
 
 int createPatch(const char *orgName){
@@ -135,8 +238,8 @@ char *findLongestCave(char *codeSec, int secSize, int *codecaveSize){
 		}
 	}
 
-	if(biggest <= MIN_LENGTH){
-		printf("biggest was %d :(\n", biggest);
+	if(biggest < MIN_LENGTH){
+		//printf("biggest was %d :(\n", biggest);
 		biggest = 0;
 		longest = NULL;
 	}
@@ -230,17 +333,27 @@ int32_t main(int32_t argc, char *argv[])
 		makeSectionExecutable(".data", fd, eh, sh_tbl);
 		writeSectionTable(patchFD, &eh, sh_tbl);
 
-		int readByts;
-		char *codeSection = extractCodeSection(fd, eh, sh_tbl, &readByts);
-		printf("%d\n", readByts);
-		write(1, codeSection, 10);
+		//int readByts;
+		//char *codeSection = extractCodeSection(fd, eh, sh_tbl, &readByts);
 
-		puts("================ CODE CAVE ================");
+		puts("================ CODE CAVES ================");
 
-		int caveSize;
-		char *cave = findLongestCave(codeSection, readByts, &caveSize);
+		//int caveSize;
+		//char *cave = findLongestCave(codeSection, readByts, &caveSize);
+		
+		int cavesNum;
+		codecave *caves = searchCodecaves(fd, eh, sh_tbl, &cavesNum);
 
-		printf("Cave size = %d\n", caveSize);
+		printf("Caves found: %d\n", cavesNum);
+
+		if (cavesNum > 0){
+			/*for(int i = 0; i < cavesNum; i++){
+				codecave cave = caves[i];
+			}*/
+
+			codecave_summary(caves, cavesNum);
+
+		}
 
 		// TODO: Make this copy the org file and only change the fields instead of copynig individualy
 		exit(0);
