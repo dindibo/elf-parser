@@ -8,6 +8,7 @@ OBJ = disasm.o elf-parser.o elf-parser-main.o
 
 elfparser: $(OBJ)
 	gcc -o $@ $^ $(CFLAGS)
+	rm -f *.o
 
 clean:
 	rm -rf *.o elfparser

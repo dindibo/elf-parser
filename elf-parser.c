@@ -413,11 +413,9 @@ bool is_ELF(Elf32_Ehdr eh)
 	 * Using  octal escape sequence to represent 0x7f
 	 */
 	if(!strncmp((char*)eh.e_ident, "\177ELF", 4)) {
-		printf("ELFMAGIC \t= ELF\n");
 		/* IS a ELF file */
 		return 1;
 	} else {
-		printf("ELFMAGIC mismatch!\n");
 		/* Not ELF file */
 		return 0;
 	}
